@@ -1,0 +1,302 @@
+import copy
+from ast import literal_eval as create_tuple
+
+def load_road_network(filename):
+    """ Accepts a 'txt' file that has a specific format, returns one dictionary 
+    with intersection id as key, the traffic signals as value and another 
+    dictionary with roads as keys, number of timesteps as its values. 
+    """
+    # TODO: Write your function here
+    fp = open(filename)
+    data = fp.readlines()
+    intersections_list = {}
+    roads_cost = {}
+    ints_id = []
+    signals = []
+    # put lines into a list for easier access 
+    lines = [line.rstrip() for line in data] 
+    
+    def intersection(filename):
+        """ Accepts a txt file and returns one dictionary 
+        with intersection id as key, the traffic signals as value
+        """
+        # go through the list of lines and classify if they are to be used for 
+        # intersections dictionary, and sort the information into key or value
+        for i in range(len(lines)):
+            if '#Intersection:' in lines[i]:
+                ints_id.append(int(lines[i][-1]))
+                
+            elif ')' in lines[i] and ':' not in lines[i]:
+                # strip off the string mark around the tuples
+                nodes_str = [i.replace("'", "") for i in lines[i].split(';')]
+                nodes_no_str = [eval(i.strip()) for i in nodes_str]
+                signals.append(nodes_no_str)
+                
+            # when the line is blank, sorts the information categorised into 
+            # the output dictionary as key and value
+            else:
+                if len(ints_id) == 1:
+                    signals_copy = signals.copy()
+                    intersections_list[ints_id[0]] = signals_copy
+                    ints_id.pop(0)
+                    signals.clear()
+        return intersections_list
+    
+    def roads(filename):
+        """Accepts a txt file and returns one dictionary with roads as keys, 
+        number of timesteps as its values.
+        """
+        for line in data:
+            # see if the line is to be used for the road dictionary, if so 
+            # split the line according to key and value
+            if '):' in line:
+                key = line.rstrip('\n').split(':')
+                if len(key) == 2:
+                    roads_cost[eval(key[0].strip())] = int(key[1])
+        return roads_cost
+    # return the two dictionaries formed from two nested functions 
+    return intersection(filename), roads(filename)
+
+def path_cost(path, intersections, road_times):
+    """ Takes a test path, intersections and road times used for test path. The 
+    function returns whether the vehicle can travel through the path without
+    stopping at any intersections. If so it will return None, else it will 
+    return how long the journey would take.
+    """
+    # TODO: Write your function here
+    timestep = 0
+    # arrive at first intersection
+    timestep += road_times[(path[0], path[1])]
+    for i in range(len(path)):
+        if len(path) >= 3:
+            # Find out which 'timestep' we are in for the intersection.
+            if len(intersections[path[1]]) <= timestep:
+                cycle = timestep
+                for time in range(int(timestep / len(intersections[path[1]]))):
+                    if len(intersections[path[1]]) <= cycle:
+                        cycle = cycle - len(intersections[path[1]])
+                    else:
+                        break
+            else:
+                cycle = timestep
+            # Check if we need to stop, if yes, then return None.  
+            if (path[0], path[2]) not in (intersections[path[1]]
+                                            [cycle]):
+                return None
+            # Otherwise we would add on the timestep(s) and drive to the next 
+            # intersection point.
+            else:
+                path.pop(0)
+                timestep += road_times[(path[0], path[1])]
+        # if there are only two items in path, it means we have already reached
+        # the destination, and hence just returns the time taken. 
+        else:
+            return timestep
+                                       
+def intersection_step(intersections, road_times, intersection_id, 
+                      cars_at_intersection, timestep):
+    """The function takes cars at a certain intersection and timestep, the
+    intersections and road times for the path the cars are driving. It should
+    return which car(s) can cross the intersection at the timestep given.
+    """
+    # TODO: Write your function here
+    allowed_cars = []
+    road_crossing_type = {}
+    
+    # cuts off the part the path that doesn't need to be considered, leaving 
+    # only the point to intersectiion, intersection, point from destination
+    for i in range(len(cars_at_intersection)):
+        for points in range(len(cars_at_intersection[i][1])):
+            if len(cars_at_intersection[i][1]) > 3:
+                if cars_at_intersection[i][1][points + 1] != intersection_id:
+                    cars_at_intersection[i][1].pop(points)
+                elif cars_at_intersection[i][1][points + 1] == intersection_id:
+                    for times in range(len(cars_at_intersection[i][1])):
+                        if len(cars_at_intersection[i][1]) > 3:
+                            cars_at_intersection[i][1].pop()
+                    break
+                    
+    # generate a dictionary for the cars with the same point to intersections 
+    # and point from intersections. The key is the path, value is car id and 
+    # time step it arrived at intersection
+    for car in cars_at_intersection:
+        path_list = car[1]
+        path_tuple = tuple(path_list)
+        if path_tuple not in road_crossing_type.keys():
+            road_crossing_type[path_tuple] = [(car[0], car[2])]
+        else:
+            road_crossing_type[path_tuple] += [(car[0], car[2])]
+            
+    for path in road_crossing_type.items():
+        # first consider whether at this timestep, the path the car is taking 
+        # is allowed to traverse the intersection.
+        cycle = timestep
+        if cycle >= len(intersections[intersection_id]):
+            cycle = timestep - int(timestep 
+                                    / len(intersections[intersection_id]))* \
+                                len(intersections[intersection_id])
+            
+        # if yes, consider if there are any other cars at intersecton taking
+        # same path.
+        if (path[0][0], path[0][2]) in intersections[intersection_id][cycle]:
+            if len(path[1]) == 1:
+                allowed_cars.append(path[1][0][0])
+                
+            # if yes, the car who came to intersection first get to traverse.    
+            else:
+                first_come = min([when[1] for when in path[1]])
+                first = [car for car in path[1] if car[1] == first_come]
+                
+                # if there are more than one car that arrived at the 
+                # intersection first, the car with lowest car id can traverse.
+                if len(first) > 1:
+                    lower_car_id = min([car_id[0] for car_id in first])
+                    allowed_cars.append(lower_car_id)
+                else:
+                    allowed_cars.append(first[0][0])
+                    
+    # see which car(s) can traverse the intersection given.
+    return sorted(allowed_cars)
+
+def simulate(intersections, road_times, cars_to_add):
+    """Takes multiple cars on a road network given and returns the actions of 
+    each car in the network at every timestep from when the car enters the 
+    network. 
+    """
+    # TODO: Write your function here
+    
+    # If there's no car on road at anytime
+    if len(cars_to_add) != 0:
+        # Find out when the first car(s) enter the road network.
+        timestep = min([cars_to_add[i][2] for i in range(len(cars_to_add))])
+        cars_to_add_list = [list(i)for i in cars_to_add]
+        cars_to_add_copy = copy.deepcopy(cars_to_add_list)
+        output = []
+        while len(cars_to_add_list) > 0:
+            wait_or_drive = {}
+            # removes the car from the network once it has arrived.
+            removed_cars = [i for i in cars_to_add_list if len(i[1]) == 0]
+            removed_cars_id = [i[0] for i in cars_to_add_list if len(i[1])
+                               == 0]
+            if len(removed_cars) > 0:
+                for i in removed_cars:
+                    cars_to_add_list.remove(i)
+                removed_cars_c = [car for car in cars_to_add_copy if car[0] in 
+                                      removed_cars_id]
+                for cars in removed_cars_c:
+                    cars_to_add_copy.remove(cars)    
+            # find out which car(s) are travering at the given timestep (used 
+            # for later calling the function which car(s) can pass 
+            # an intersection)
+            car_travelling = [i[0] for i in cars_to_add_list if i[2]
+                              != timestep]
+
+            for cars in cars_to_add_list:
+                if cars[2] == timestep:
+                    # find out if the car will arrive at this timestep
+                    if len(cars[1]) >= 2:
+                        # find out if the car is at an intersection, if yes it 
+                        # will need to be classified by which intersection it 
+                        # is at.
+                        if cars[1][0] in intersections:
+                            if cars[1][0] in wait_or_drive.keys():
+                                wait_or_drive[cars[1][0]] += [cars.copy()]
+                            else:
+                                wait_or_drive[cars[1][0]] = [cars.copy()]
+
+                        # Otherwise drive to the next node       
+                        else:
+                            times = road_times[(cars[1][0], cars[1][1])]
+                            for i in range(times):
+                                output.append(f'drive({timestep + i}, ' 
+                                              f"{cars[0]}, {cars[1][0]}"
+                                              f", {cars[1][1]})")
+                            cars[1].pop(0)
+                            cars[2] += times
+
+                    # Car arrived        
+                    else:
+                        output.append(f'arrive({timestep}, {cars[0]}, ' 
+                                      f'{cars[1][0]})')
+                        cars[1].pop(0)
+            # See if the car can drive pass or has to wait
+            if len(wait_or_drive.keys()) > 0:
+                for key, value in wait_or_drive.items():
+                    consider = cars_to_add_copy.copy()
+                    # to examine the cars actually at the intersection, delete
+                    # all carr that are traversing
+                    if len(car_travelling) > 0:
+                        travel_c = [i for i in consider if i[0] in 
+                                    car_travelling]
+                        for cars in travel_c:
+                            consider.remove(cars)
+                    # remove the cars that are not actually at the intersection
+                    # but will eventually be at the intersection later on
+                    remove = []
+                    for i in cars_to_add_list:
+                        if len(i[1]) != 0:
+                            if i[1][0] != key or i[2] != timestep:
+                                for car in consider:
+                                    if i[0] == car[0]:
+                                        remove.append(car)
+                        else:
+                            for car in consider:
+                                if i[0] == car[0]:
+                                    remove.append(car)      
+                    if len(remove) > 0:
+                        for cars in remove:
+                            consider.remove(cars)
+                    # to get the timestep the car has arrived at
+                    # the intersection       
+                    for cars in consider:
+                        for i in value:
+                            if cars[0] == i[0]:
+                                cars[2] = i[-1]
+                                
+                    drive = intersection_step(intersections, road_times, key, 
+                                                      consider, timestep)
+                    # if in the list that shows the car(s) that can drive at
+                    # this intersection and timestep, drive to the next node.
+                    for car in value:
+                        if car[0] in drive:
+                            times = road_times[(car[1][0], car[1][1])]
+                            for i in range(times):
+                                output.append(f'drive({timestep + i}, ' 
+                                     f"{car[0]}, {car[1][0]}, {car[1][1]})")
+                            for i in cars_to_add_list:
+                                if i[0] == car[0]:
+                                    i[2] += times
+                                    i[1].pop(0)
+                                    if len(i) ==4:
+                                        i.pop(3)
+
+                        else:
+                            output.append(f'wait({timestep}, {car[0]}, '
+                                          f'{car[1][0]})')
+                            for i in cars_to_add_list:
+                                if i[0] == car[0]:
+                                    i[2] += 1
+                                    if len(i) < 4:
+                                        i.append(timestep)
+            timestep += 1
+
+        def my_key(item):
+            """ Accepts each single argument from the output of of 
+            simulate(intersections,road_times, cars_to_add), and return a tuple 
+            in the order of the timestep then car id.
+            """
+            # strip the action words leaving only the tuple containing timestep
+            # and car id
+            tuple_only = item.strip("driveawt")
+            # removing the quotation marks around the tuple
+            if tuple_only.startswith('(') and tuple_only.endswith(')'):
+                lst = [int(i) for i in tuple_only[1:-1].split(',')]
+            # identify which is the timestep and which is car id
+            return (lst[0], lst[1])
+
+        # sort the output in desired manner and see the actions of each car at 
+        # every timestep.
+        return sorted(output, key=my_key)
+    return []   
+            
+        
