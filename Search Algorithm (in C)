@@ -1,0 +1,422 @@
+/* Program to generate term-biased snippets for paragraphs of text.
+
+   Skeleton program written by Alistair Moffat, ammoffat@unimelb.edu.au,
+   August 2022, with the intention that it be modified by students
+   to add functionality, as required by the assignment specification.
+
+*/
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <ctype.h>
+#include <string.h>
+
+    /* you may need to delete this next line on some platforms
+       in order to get it to compile; if you end up doing that
+       make sure you put it back before you submit to the
+       Gradescope system, because it is required there */
+#include <strings.h>
+
+    /* maximum number of characters per word */
+#define MAX_WORD_LEN 23
+    /* maximum number of words per paragraph */
+#define MAX_PARA_LEN 10000
+
+    /* return code from get_word if end of paragraph found */
+#define PARA_END 1
+    /* return code from get_word if a word successfully found */
+#define WORD_FND 2
+
+    /* terminating punctuation that may follow a word */
+#define TERM_PUNCT ".,;:!?"
+    /* terminating punctuation that needs dots added */
+#define NEEDS_DOTS ",;:"
+    /* the string the separates paragraphs */
+#define PARA_SEPARATOR "\n\n"
+    /* insertion characters to indicate "bold" */
+#define BBOLD "**"
+    /* length of those characters when wrapped around a word */
+#define BBOLD_LEN (2*strlen(BBOLD))
+    /* insertion characters to indicate omitted text */
+#define DDOTS "..."
+
+    /* maximum words in any output snippet */
+#define MAX_SNIPPET_LEN 30
+    /* minimum words in any output snippet */
+#define MIN_SNIPPET_LEN 20
+    /* maximum length of output lines */
+#define MAX_OUTPUT_LINE 72
+
+    /* maximum terms allowed on command line */
+#define MAX_TERMS 50
+
+#define BLANK ""
+
+#define WHOLE 0
+
+#define ONE_WORD 1
+
+#define DONT_NEED_DOTS ".!?"
+
+typedef char word_t[MAX_WORD_LEN+1];
+
+int get_word(word_t w, int limit);
+
+int get_paragraph(word_t paragraph[], int limit);
+
+void print_paragraph(word_t paragraph[], int len);
+
+int check_keyword(char *argv[], int argc, int p_length, word_t paragraph[]);
+
+void best_snippet(word_t paragraph[], double *length, double *score, 
+     double *start, int wcount, word_t snippet[], int argc);
+
+double scoring(word_t cur_snippet[], double d_length, double d_start, int argc,
+       word_t paragraph[]);
+
+void put_snippet(word_t from[], word_t dest[], int length, int start);
+
+void score_compare(double *score, int d_length, int d_start, 
+     double *length, double *start, word_t snippet[],
+     word_t cur_snp[], word_t paragraph[], int argc);
+/* If you wish to add further #defines, put them below this comment,
+   then prototypes for the functions that you add
+
+   The only thing you should alter above this line is to complete the
+   Authorship Declaration 
+*/
+
+/****************************************************************/
+
+
+/* main program controls all the action
+*/
+int
+main(int argc, char *argv[]) {
+    word_t paragraph[MAX_PARA_LEN];
+    word_t snippet[MAX_SNIPPET_LEN + 1];
+    int word_count = 0, paragraph_no = 0;
+    double length, start, score;
+    printf("\n");
+    
+    while ((word_count = get_paragraph(paragraph, MAX_PARA_LEN)) > 0) {
+        paragraph_no += 1;
+        printf("======= Stage 1 [para %d; %d words]\n\n",
+        paragraph_no, word_count);
+        
+        int matches = check_keyword(argv, argc, word_count, paragraph);
+        printf("======= Stage 2 [para %d; %d words; %d matches]\n", 
+        paragraph_no, word_count, matches);
+        print_paragraph(paragraph, word_count);
+        
+        best_snippet(paragraph, &length, &score, &start, word_count,
+        snippet, argc);
+        printf("\n");
+        printf("======= Stage 3 [para %d; start %.0f; length %.0f; score %.2f]"
+        , paragraph_no, start, length, score);
+        printf("\n");
+        print_paragraph(snippet, length);
+        printf("\n");
+    }
+    
+    printf("ta daa!\n");
+    return 0;
+}
+
+/****************************************************************/
+
+
+/* extract a single word out of the standard input, but not
+   more than "limit" characters in total. One character of
+   sensible trailing punctuation is retained.  
+   argument array W must be limit+1 characters or bigger
+*/
+int
+get_word(word_t W, int limit) {
+    int c, count_lbreak = 0;
+    /* first, skip over any non alphanumerics */
+    while ((c=getchar())!=EOF && !isalnum(c)) {
+        if (c == '\n') {
+            count_lbreak += 1;
+            if (count_lbreak == 2) {
+                return PARA_END;
+            } 
+        }
+    }
+    if (c==EOF) {
+        return EOF;
+    }
+    /* ok, first character of next word has been found */
+    *W = c;
+    W += 1;
+    limit -= 1;
+    while (limit>0 && (c=getchar())!=EOF && isalnum(c)) {
+        /* another character to be stored */
+        *W = c;
+        W += 1;
+        limit -= 1;
+    }
+    /* take a look at that next character, is it a sensible trailing
+       punctuation? */
+    if (strchr(TERM_PUNCT, c) && (limit>0)) {
+        /* yes, it is */
+        *W = c;
+        W += 1;
+        limit -= 1;
+    }
+
+    /* now close off the string */
+    *W = '\0';
+    return WORD_FND;
+}
+
+/* calculate the numbers of words in a paragraph. At the same time it stores
+    each word into a string array, but not more than the MAX_PARA_LEN.
+*/
+int
+get_paragraph(word_t paragraph[], int limit) {
+    int word_count = 0;
+    while (get_word(paragraph[word_count], MAX_WORD_LEN) == WORD_FND 
+    && (limit > 0)) {
+        word_count += 1;
+        limit -= 1;
+    }
+    return word_count;   
+}
+
+/* prints out the paragraph with a maximum of 72 (the max output length) 
+   characters (including key-word astrixes if there are any and spaces between
+   words)
+*/
+void
+print_paragraph(word_t paragraph[], int len) {
+    int byte = 0, word_length, next_wd_len;
+    word_length = strlen(paragraph[0]);
+    for (int i = 0; i < len; i ++) {
+        next_wd_len = strlen(paragraph[i + 1]);
+        if (strstr(paragraph[i + 1], DDOTS)) {
+            next_wd_len -= 3;
+        }
+        
+        if ((byte += word_length) <= MAX_OUTPUT_LINE) {
+            printf("%s", paragraph[i]);
+            /* only prints space between words */
+            if ((byte + next_wd_len + 1) <= MAX_OUTPUT_LINE){
+                if (i != len - 1) {
+                    printf(" ");
+                    byte += 1;
+                 }
+                word_length = next_wd_len;
+            /* putting \n between lines */    
+            } else {
+                if (i != len -1) {
+                    printf("\n");
+                    byte = 0;
+                    word_length = next_wd_len;
+                }
+            } 
+        }
+    } 
+    printf("\n");
+}
+
+/*The program checks each word in the paragraph if it matches the word 
+  supplied on the command- line. If it does, put double astrix (** aka.BBOLD)
+  around the word not including the TERM_PUNCT. Also returns the number of 
+  matched words.
+*/
+int
+check_keyword(char *argv[], int argc, int p_length, word_t paragraph[]) {
+    int matches = 0;
+    for (int i = 0; i < p_length; i++) { 
+        int has_punct = 0;
+        for (int j = 0; j < argc; j++) { 
+            /* check if the word has a trailing punctuation for later checking
+               mechanism used */
+            int str_len = strlen(paragraph[i]);
+            if (strchr(TERM_PUNCT, paragraph[i][str_len - 1])) {
+                has_punct = 1;
+            }
+            
+            /* prints BBOLD around the word if matches keyword */
+            if (strcasecmp(paragraph[i], argv[j]) == 0 || (has_punct == 1 && 
+            strncasecmp(paragraph[i], argv[j], str_len - 1) == 0)) {
+                word_t keyword[MAX_PARA_LEN];
+                strcpy(*keyword, BBOLD);
+                
+                if (has_punct) {
+                    strncat(*keyword, paragraph[i], str_len - 1);
+                    strcat(*keyword, BBOLD);
+                    strcat(*keyword, &paragraph[i][str_len - 1]);
+                    
+                } else {
+                    strcat(*keyword, paragraph[i]);
+                    strcat(*keyword, BBOLD);
+                }
+                strcpy(paragraph[i], *keyword);
+                matches += 1;
+            }
+            
+         }
+     }
+     return matches;
+}
+/* create snippets and compare them */
+void    
+best_snippet(word_t paragraph[], double *length, double *score, double *start, 
+int wcount, word_t snippet[], int argc) {
+    word_t cur_snp[MAX_SNIPPET_LEN];
+    *length = MIN_SNIPPET_LEN, *start = 0, *score = 0;
+    int d_length = *length, d_start = *start;
+    int count = 0;
+    if (wcount > MIN_SNIPPET_LEN) {
+        while (count <= wcount - MIN_SNIPPET_LEN) {
+            /* From a word that can extend to MAX_SNIPPET_LEN */
+             if (count < wcount - MAX_SNIPPET_LEN +1 && 
+                 wcount - MAX_SNIPPET_LEN > 0) {
+                for (int time = 0; time <= (MAX_SNIPPET_LEN - MIN_SNIPPET_LEN); 
+                     time ++) {
+                    d_length = MIN_SNIPPET_LEN;
+                    score_compare(score, d_length += time, d_start, length, 
+                    start, snippet, cur_snp, paragraph, argc); 
+                }
+            /* From a paragraph with less than MAX_SNIPPET_LEN */
+            } else if (wcount - MAX_SNIPPET_LEN < 0){
+                for (int time = 0; 
+                (wcount - MIN_SNIPPET_LEN - time - d_start) >= 0; time ++) {
+                    d_length = MIN_SNIPPET_LEN;
+                    score_compare(score, d_length += time, d_start,
+                    length, start, snippet, cur_snp, paragraph, 
+                    argc);
+                 }
+            /* From a word that can only be extended from and including
+               MIN_SNPPET_LEN to MAX_SNIPPET_LEN (not included)
+            */
+            } else if (count >= wcount - MAX_SNIPPET_LEN + 1 && 
+              wcount - MAX_SNIPPET_LEN > 0) {
+                for (int time = 0; time <= (wcount - count - MIN_SNIPPET_LEN); 
+                time ++) {    
+                    d_length = MIN_SNIPPET_LEN;
+                    score_compare(score, d_length += time, d_start, length, 
+                    start, snippet, cur_snp, paragraph, argc);
+                }    
+            }
+
+            d_start += 1;
+            count += 1;
+        }
+    /* When snippet less than MIN_SNIPPET_LEN */
+    } else {
+        score_compare(score, wcount, WHOLE, length, 
+        start, snippet, cur_snp, paragraph, argc);
+    }
+}
+/* Calculate the score of individual snippets according to rules provided */
+double 
+scoring(word_t cur_snippet[], double d_length, double d_start, 
+int argc, word_t paragraph[]) {
+    word_t last_word[ONE_WORD];
+    word_t key_terms[argc];
+    int use = 0, found = 1, wlen, int_d_start = d_start;
+    double snp_score = 0;
+    for (int times = 0; times < argc; times ++) {
+        strcpy(key_terms[times], BLANK);
+    }
+    
+    if (d_start != 0) {
+        strcpy(last_word[0], paragraph[(int_d_start - 1)]);
+    } else {
+        strcpy(last_word[0], paragraph[(int_d_start)]);
+    }
+    /* rule 1 (from assignment sheet) */
+    snp_score += 15 / (d_start + 10);
+    
+    /* rule 4 (from assignment sheet) */
+    for (int i = 0; i < d_length; i++) { 
+        wlen = strlen(cur_snippet[i]);
+        if (i == 0) {
+            if (d_start == 0){
+                snp_score += 0.6;
+            } else {
+                int l_wlen = strlen(last_word[0]);
+                if (strchr(TERM_PUNCT, last_word[0][l_wlen-1])) {
+                    snp_score += 0.6;
+                }
+            }
+        }
+        
+        if (strstr(cur_snippet[i], BBOLD)) {
+            for (int j = 0; j < argc; j++) {
+                if (strchr(TERM_PUNCT, cur_snippet[i][wlen-1])) {
+                    found = strncasecmp(cur_snippet[i], key_terms[j], wlen-1);
+                } else {
+                    found = strcasecmp(cur_snippet[i], key_terms[j]);
+                }
+                if (found == 0) {
+                    break;
+                }
+            }
+            /* rule 2 (from assignment sheet) */
+            if (found == 0) {
+                snp_score += 1;
+            /* rule 3 (from assignment sheet) */
+            } else {
+                double awlen = wlen - 4;
+                if (strchr(TERM_PUNCT, cur_snippet[i][wlen-1])) {
+                    awlen -= 1;
+                }
+                snp_score += (awlen / 2);
+                strcpy(key_terms[use], cur_snippet[i]);
+                use += 1;
+            }
+        }
+        /* rule 5 (from assignment sheet) */
+        if (i == d_length - 1) {
+            if (strchr(TERM_PUNCT, cur_snippet[i][wlen - 1])) {
+                snp_score += 0.3;
+            }
+        }
+    }
+    /* rule 6 (from assignment sheet) */
+    snp_score -= (0.1 * (d_length - MIN_SNIPPET_LEN));
+    return snp_score;
+}
+
+/* place the required amount of words into the cur_snp we are trying to 
+   investigate in.
+*/
+void 
+put_snippet(word_t from[], word_t dest[], int length, int start) {
+    for (int i = 0; i < length; i++) {
+        strcpy(dest[i], from[start]);
+        start += 1;
+    }
+}
+
+/* extracts the snippet and compare the current snippet score with the 
+   highest score, if it is higher, then replace snippet and change the length, 
+   start and score to the stat of the current snippet and add DDOTS if needed
+*/
+void
+score_compare(double *score, int d_length, int d_start, 
+              double *length, double *start, word_t snippet[], word_t cur_snp[],
+              word_t paragraph[], int argc) {
+    
+    double cur_score;
+    put_snippet(paragraph, cur_snp, d_length, d_start);
+    cur_score = scoring(cur_snp, d_length, d_start, argc, paragraph);
+    
+    if (cur_score > *score) {
+        *score = cur_score;
+        *length = d_length;
+        *start = d_start;
+        put_snippet(cur_snp, snippet, d_length, WHOLE);
+        
+        /* Adding dots after the last word if required */
+        int str_len = strlen(snippet[d_length - 1]);
+        if (!strchr(DONT_NEED_DOTS, snippet[d_length - 1][str_len -1])) {
+            strcat(snippet[d_length - 1], DDOTS);
+        }
+    }
+}
