@@ -1,0 +1,640 @@
+/* Program to discover a process model from an event log.
+
+  Skeleton program written by Artem Polyvyanyy, artem.polyvyanyy@unimelb.edu.au,
+  August 2022, with the intention that it be modified by students
+  to add functionality, as required by the assignment specification.
+
+*/
+#include <stdio.h>
+#include <stdlib.h>
+#include <ctype.h>
+#include <assert.h>
+#include <string.h>
+/* #DEFINE'S -----------------------------------------------------------------*/
+#define GOOD_LUCK   "GOOD LUCK CLASS!!!\n"      // good luck message
+#define SAME 0
+#define SMALLER -1
+#define BIGGER 1
+#define INITIAL 10
+#define END_TRC '\n'
+#define TRUE 1
+#define END_LOG -1
+#define NOT_FOUND -1
+#define EVE_CPT  308 /*26 + 26 + 256*/
+#define TABLE_TOP_FORMAT "     "
+#define SEQ_THRESHOLD 70
+#define MAX(i, j) (((i) > (j)) ? (i) : (j))
+#define FIRST_SEQ 256
+#define CPT_SEQ 1000 
+#define SEQ_FOUND 1
+#define CON_FOUND 2
+#define CHC_FOUND 3
+#define CON_THRESHOLD 30
+/* TYPE DEFINITIONS ----------------------------------------------------------*/
+typedef unsigned int action_t;  // an action is identified by an integer
+
+typedef struct event event_t;   // an event ...
+struct event {                  // ... is composed of ...
+    action_t actn;              // ... an action that triggered it and ...
+    event_t* next;              // ... a pointer to the next event in the trace
+};
+
+typedef struct {                // a trace is a linked list of events
+    event_t* head;              // a pointer to the first event in this trace
+    event_t* foot;              // a pointer to the last event in this trace
+    int      freq;              // the number of times this trace was observed
+} trace_t;
+
+typedef struct {                // an event log is an array of distinct traces
+                                //     sorted lexicographically
+    trace_t* trcs;              // an array of traces
+    int      ndtr;              // the number of distinct traces in this log
+    int      cpct;              // the capacity of this event log as the number
+                                //     of  distinct traces it can hold
+} log_t;
+
+typedef action_t** DF_t;        // a directly follows relation over actions
+
+/* WHERE IT ALL HAPPENS ------------------------------------------------------*/
+trace_t * make_empty_trace(void);
+log_t * make_empty_log(void);
+trace_t *insert_event_at_foot(trace_t *trace, action_t value);
+int read_n_put_trc(log_t *log, int *event_count, int *d_eventsnum, 
+                   int prevevents[]);
+int in_log(log_t *log, trace_t *trace);
+int cmp_trace(trace_t *t1, trace_t *t2);
+void distinct_event_count(int prevevents[], action_t curevent, 
+                          int *d_eventsnum);
+void print_events_n_freq(int prevevents[], int capacity);
+void sort_log(log_t *log);
+void trace_swap(trace_t *trc1, trace_t *trc2);
+void print_trace(trace_t *trace);
+void most_freq_trace(log_t *log);
+void calculate_support(action_t sup[][CPT_SEQ], log_t *log, 
+                       int prevevents[]);
+void print_table(action_t sup[][CPT_SEQ], int prevevents[], int capacity);
+void likely_patterns(action_t sup[][CPT_SEQ], log_t *log, int prevevents[], 
+                      int *code, int capacity);
+void update_log(log_t *log, action_t maxw_eventp1, action_t maxw_eventp2, 
+             int *code);
+void delete_node(trace_t *trace, event_t *delete_event_node);
+void update_events(int prevevents[], log_t *log);
+int w_of_seq(action_t sup[][CPT_SEQ], int prevevents[], int *maxw_eventp1, 
+         int*maxw_eventp2);
+void free_trace(trace_t *trace);
+void free_log(log_t *log);
+    
+int
+main(int argc, char *argv[]) {
+    int total_trcs = 0, total_events = 0;
+    int prevevents[EVE_CPT] = {0};
+    
+    printf("==STAGE 0============================\n");
+    log_t *log = make_empty_log();
+    int d_eventsnum = 0, event_count;
+    while ((read_n_put_trc(log, &event_count, &d_eventsnum, prevevents) 
+    != END_LOG)) {
+       total_trcs ++;
+       total_events += event_count;
+    }
+    total_trcs ++;
+    total_events += event_count;
+    printf("Number of distinct events: %d\n", d_eventsnum);
+    printf("Number of distinct traces: %d\n", log->ndtr);
+    printf("Total number of events: %d\n", total_events);
+    printf("Total number of traces: %d\n", total_trcs);
+    sort_log(log);
+    most_freq_trace(log);
+    print_events_n_freq(prevevents, EVE_CPT);
+    
+    printf("==STAGE 1============================\n");
+    action_t sup[CPT_SEQ][CPT_SEQ];
+    int code = FIRST_SEQ;
+    calculate_support(sup, log, prevevents);
+    /* Stage 2 will start in this function as it is based on stage 1 */
+    likely_patterns(sup, log, prevevents, &code, EVE_CPT);
+    free_log(log);
+    return 0;        
+}
+
+/* Creates an empty log so traces can be put in */
+log_t *
+make_empty_log(void) {
+    log_t *log = (log_t *) malloc(sizeof(*log));
+    log->trcs = (trace_t *) malloc(INITIAL * sizeof(trace_t));
+    assert(log->trcs != NULL);
+    log->ndtr = 0;
+    log->cpct = INITIAL;
+    return log;
+}
+
+/* Creates an empty trace so events can be added */
+trace_t *
+make_empty_trace(void) {
+    trace_t *trace = (trace_t *) malloc(sizeof(*trace));
+    assert(trace != NULL);
+    trace->head = trace->foot = NULL;
+    trace -> freq = 0;
+    return trace;
+}
+
+/* Method of placing events to the end of a trace */
+trace_t *
+insert_event_at_foot(trace_t *trace, action_t value) {
+    event_t *new = (event_t *) malloc(sizeof(*new));
+    assert(trace != NULL && new != NULL);
+    new->actn = value;
+    new->next = NULL;
+    if (trace->foot == NULL) {
+        trace->head = new;
+        trace->foot = new;
+    } else {
+        trace->foot->next = new;
+        trace->foot = new;
+    }
+    return trace;
+}
+
+/* Read a trace and put it in the log if it has not appeared before, the number
+   of times the trace has appeared will be reflected in the freq section of the
+   trace struct. The function also counts the number of diistict events.
+*/
+int
+read_n_put_trc(log_t *log, int *event_count, int *d_eventsnum, 
+               int prevevents[]) {
+    int event_in_trcs = 0;
+    trace_t *trace = make_empty_trace();
+    int end = 0;
+    while (TRUE) {
+        int c = getchar();
+        if (isalpha(c)) {
+            distinct_event_count(prevevents, c, d_eventsnum);
+            insert_event_at_foot(trace, c);
+            event_in_trcs ++;
+        } else if (c == EOF || c == END_TRC) {
+            if (c == EOF) {
+                end = END_LOG;
+            }
+            break;
+        }
+    }
+    *event_count = event_in_trcs;
+    /* place traces and if it's already there then add the frequency by 1 */
+    if (in_log(log,trace) == NOT_FOUND) {
+        if (log->ndtr >= log->cpct) {
+            log->cpct *= 2;
+            log->trcs = realloc(log->trcs, sizeof(trace_t) * log->cpct);
+            assert(log->trcs);
+        }
+        log->trcs[log->ndtr] = *trace;
+        log->trcs[log->ndtr].freq ++;
+        log->ndtr ++;
+   } else {
+       log->trcs[in_log(log,trace)].freq ++;
+   }
+   return end;
+}
+
+/*Identify if the trace has already appeared in the log. If yes, it will return
+  the position in the trace section of log (identify which trace it duplicates)
+  else it will return 0.
+*/
+int
+in_log(log_t *log, trace_t *trace) {
+    for (int i = 0; i < log->ndtr; i++) {
+        if (cmp_trace(trace, &log->trcs[i]) == SAME) {
+            return i;
+        }
+    }
+    return NOT_FOUND;
+}
+
+/* compares two traces and if trc1 is bigger return 1(BIGGER), else returns 
+   0(SAME) if same, and -1(SMALLER) if smaller.
+*/
+int
+cmp_trace(trace_t *trc1, trace_t *trc2) {
+    event_t *head = trc1->head;
+    event_t *headi = trc2->head;
+    while (head && headi) {
+        if (head->actn != headi->actn) {
+            if (head->actn > headi->actn) {
+                return SMALLER;
+            } else {
+                return BIGGER;
+            }
+        }
+        head = head->next;
+        headi = headi->next;
+    }
+    if (head == NULL && headi == NULL) {
+        return SAME;
+    } else {
+        if (head == NULL && headi != NULL) {
+            return SMALLER;
+        } else {
+            return BIGGER;
+        }
+    }
+}
+
+/* Add 1 to the destination index of the letter(event) in prevevents array so 
+   we can find the frequency of the appearance of each letter(event). Also 
+   calculates the number of distinct events.
+*/
+void
+distinct_event_count(int prevevents[], action_t curevent, int *d_eventsnum) {
+    int d_events = 0;
+    if (prevevents[curevent] == 0) {
+        d_events ++;
+    }
+    prevevents[curevent] ++;
+    *d_eventsnum += d_events;
+}
+
+/* print the events and their frequency */
+void
+print_events_n_freq(int prevevents[], int capacity) {
+    for (int i = 0; i < capacity; i++) {
+        if (prevevents[i] > 0) {
+            if (i < FIRST_SEQ) {
+                printf("%c = %d\n", i, prevevents[i]);
+            } else {
+                printf("%d = %d\n", i, prevevents[i]);
+            }
+        }
+    }
+}
+
+/* Sort the traces in the log in lexicographical order */
+void
+sort_log(log_t *log) {
+    for (int i = 1; i < log->ndtr; i++) {
+        for (int j = i - 1; j >= 0 && 
+        (cmp_trace(&log->trcs[j], &log->trcs[j + 1])) == SMALLER; j--) {
+            trace_swap(&log->trcs[j], &log->trcs[j + 1]);
+        }
+    }
+}
+
+/* Swap two traces */
+void
+trace_swap(trace_t *trc1, trace_t *trc2) {
+    trace_t temp;
+    temp = *trc1;
+    *trc1 = *trc2;
+    *trc2 = temp;
+}
+
+/* print a trace */
+void
+print_trace(trace_t *trace){
+    event_t *head = trace->head;
+    while (head){
+        if (head -> actn < FIRST_SEQ) {
+            printf("%c", head -> actn);
+        } else {
+            /* This bit helps to debug... not required by assignment */
+            printf("%d ", head -> actn);
+        }
+        head = head->next;
+    }
+    printf("\n");
+}
+
+/* Find the trace with the highest frequency and print the trace and its 
+   frequency.
+*/
+void 
+most_freq_trace(log_t *log) {
+    int highest_freq = 0;
+    for (int i = 0; i < log->ndtr; i++) {
+        if ((log->trcs[i].freq) > highest_freq) {
+            highest_freq = log->trcs[i].freq;
+        }
+    }
+    printf("Most frequent trace frequency: %d\n", highest_freq);
+    for (int i = 0; i < log->ndtr; i++) {
+        if ((log->trcs[i].freq) == highest_freq) {
+            print_trace(&log->trcs[i]);
+        }
+    }
+}
+
+/* Enters the support pairs into a two dimensional array and count how many of
+   there are for each of the pairs. 
+*/
+void 
+calculate_support(action_t sup[][CPT_SEQ], log_t *log, int prevevents[]){
+    for (int i = 0; i < CPT_SEQ; i++) {
+        for (int j = 0; j < CPT_SEQ; j++) {
+            sup[i][j] = 0;
+        }
+    }
+    for (int trcs_no = 0; trcs_no < log->ndtr; trcs_no++) {
+        trace_t curtrc = log->trcs[trcs_no];
+        event_t *new = curtrc.head;
+        event_t *prev = new;
+        new = new->next;
+        while (new) {
+            action_t x = prev->actn;
+            action_t y = new->actn;
+            sup[x][y] += log->trcs[trcs_no].freq;
+            prev = new;
+            new = new->next;
+        }
+    }
+}
+
+/* Print the formatted table required for stage 1 and 2 */
+void
+print_table(action_t sup[][CPT_SEQ], int prevevents[], int capacity) {
+    printf(TABLE_TOP_FORMAT);
+    for (int i = 0; i < capacity; i++) {
+        if (prevevents[i] != 0) {
+            if (i < FIRST_SEQ) {
+                printf("%5c", i);
+            } else {
+                printf("%5d",i);
+            }
+        }
+    }
+    printf("\n");
+    for (int i = 0; i < capacity; i++) {
+        if (prevevents[i] != 0) {
+            if (i < FIRST_SEQ) {
+                printf("%5c", i);  
+            } else {
+                printf("%5d", i);  
+            }
+            for (int j = 0; j < capacity; j++) {
+                if (prevevents[j] != 0) {
+                    printf("%5d", sup[i][j]);
+                }
+            }
+            printf("\n");
+        }
+    }
+    printf("-------------------------------------\n");
+}
+
+/* Find the SEQ, CON, CHC from the series of supports and prints out the 
+   sequences continuously as well as the number of events removed, the updated 
+   events and their frequencies. Also formats stage 2.
+*/
+void
+likely_patterns(action_t sup[][CPT_SEQ], log_t *log, int prevevents[], 
+                 int *code, int capacity) {
+    int maxw_eventp1, maxw_eventp2, first_time = 1, weight, stage2 = 0;
+    print_table(sup, prevevents, EVE_CPT);
+    while (TRUE) {
+        /* See if there are any other patterns we can find */
+        if ((weight = w_of_seq(sup, prevevents, &maxw_eventp1, &maxw_eventp2)) 
+            == 0) {
+            printf("==THE END============================\n");
+            break;
+        }
+        /* Denotes all abstract patterns have been found now move onto stage2 */
+        if ((weight == CON_FOUND || weight == CHC_FOUND || 
+             maxw_eventp1 > FIRST_SEQ|| maxw_eventp2 > FIRST_SEQ) && 
+            stage2 == 0) {
+            printf("==STAGE 2============================\n");
+            stage2 = 1;
+            print_table(sup, prevevents, EVE_CPT);
+            first_time = 1;
+        }
+        /* Print the table after stage 0 */
+        if (first_time == 0) {
+            printf("=====================================\n");
+            print_table(sup, prevevents, capacity);
+        }
+        /* Formattings for SEQ, CON and CHC found */
+        if (weight == SEQ_FOUND) {
+            if (maxw_eventp1 < FIRST_SEQ && maxw_eventp2 < FIRST_SEQ) {
+                printf("%d = SEQ(%c,%c)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            } else if (maxw_eventp1 >= FIRST_SEQ && maxw_eventp2 < FIRST_SEQ) {
+                printf("%d = SEQ(%d,%c)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            } else if (maxw_eventp1 < FIRST_SEQ && maxw_eventp2 >= FIRST_SEQ) {
+                printf("%d = SEQ(%c,%d)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            } else {
+                printf("%d = SEQ(%d,%d)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            }
+        }
+        if (weight == CON_FOUND) {
+            if (maxw_eventp1 < FIRST_SEQ && maxw_eventp2 < FIRST_SEQ) {
+                printf("%d = CON(%c,%c)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            } else if (maxw_eventp1 >= FIRST_SEQ && maxw_eventp2 < FIRST_SEQ) {
+                printf("%d = CON(%d,%c)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            } else if (maxw_eventp1 < FIRST_SEQ && maxw_eventp2 >= FIRST_SEQ) {
+                printf("%d = CON(%c,%d)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            } else {
+                printf("%d = CON(%d,%d)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            }
+        } if (weight == CHC_FOUND) {
+            if (maxw_eventp1 < FIRST_SEQ && maxw_eventp2 < FIRST_SEQ) {
+                printf("%d = CHC(%c,%c)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            } else if (maxw_eventp1 >= FIRST_SEQ && maxw_eventp2 < FIRST_SEQ) {
+                printf("%d = CHC(%d,%c)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            } else if (maxw_eventp1 < FIRST_SEQ && maxw_eventp2 >= FIRST_SEQ) {
+                printf("%d = CHC(%c,%d)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            } else {
+                printf("%d = CHC(%d,%d)\n", *code, maxw_eventp1, 
+                   maxw_eventp2);
+            }
+        }
+        /* What to print for each pattern identified and update the log and 
+           events table for more pattern finding.
+        */
+        printf("Number of events removed: %d\n", 
+        sup[maxw_eventp1][maxw_eventp2] + sup[maxw_eventp2][maxw_eventp1]);
+        
+        update_log(log, maxw_eventp1, maxw_eventp2, code);
+        
+        /* Check if there are two of the same code together in a trace */
+        action_t check_code = *code;
+        update_log(log, check_code, check_code, code);
+        
+        update_events(prevevents, log);
+        
+        calculate_support(sup, log, prevevents);
+        
+        print_events_n_freq(prevevents, capacity);
+        
+        first_time = 0;
+        
+        *code += 1;
+    }
+} 
+/* Find the highest weighting with the current supports and return SEQ_FOUND, 
+   CON_FOUND or CHC_FOUND which type is found. If it can't find anymore 
+   patterns return 0 to show all patterns have been found.
+*/
+int
+w_of_seq(action_t sup[][CPT_SEQ], int prevevents[], int *maxw_eventp1, 
+         int *maxw_eventp2) {
+    /* Find N (total events) */
+    int N = 0;
+    for (int i = 0; i < EVE_CPT; i++) {
+        for(int j = 0; j < EVE_CPT; j++) {
+            if (sup[i][j] != 0) {
+                N += sup[i][j];
+            }
+        }
+    }
+    int maxw = 0, type, more_pattern = 0, maxtype;
+    for (int i = 0; i < EVE_CPT; i++) {
+        if (prevevents[i] != 0) {
+            for (int j = 0; j < EVE_CPT; j++) {
+                if (prevevents[j] != 0 && i != j) {
+                    more_pattern = 1;
+                    int sxy = sup[i][j], syx = sup[j][i];
+                    int pd = 0, CHC = 0, w = 0;
+                    /* CHC */
+                    if (MAX(sxy, syx) <= N/100) {
+                        w = N * 100;
+                        type = CHC_FOUND;
+                        CHC = 1;
+                    }
+                    if (CHC != 1) {
+                        if (sxy == 0 && syx == 0) {
+                          continue;
+                        } else {
+                             /* Use of pd(x,y) rule stated in assignment */
+                            pd = (100 * abs(sxy - syx)) / MAX(sxy, syx);
+                        }
+                        /*SEQ and CON */
+                        if ((pd > SEQ_THRESHOLD && sxy > syx) || 
+                           (pd < CON_THRESHOLD && sxy > 0 && syx >0)) {
+                            if ((i < FIRST_SEQ && j < FIRST_SEQ) || pd < 30) {
+                                /* Use of w(x,y) rule stated in assignment */
+                                w = abs(50-pd) * MAX(sxy,syx) * 100;
+                                /* To identify which type */
+                                if (pd > SEQ_THRESHOLD) {
+                                    type = SEQ_FOUND;
+                                } else {
+                                    type = CON_FOUND;
+                                }
+                            } else {
+                                 /* Use the w(x,y) rule stated in assignment */
+                                w = abs(50-pd) * MAX(sxy,syx);
+                                type = SEQ_FOUND;
+                            }
+                        }
+                    }
+                    if (w > maxw) {
+                        maxw = w;
+                        *maxw_eventp1 = i;
+                        *maxw_eventp2 = j;
+                        maxtype = type;
+                    }
+                }
+            }
+        }
+    }
+    if (more_pattern == 0) {
+        return 0;
+    } else {
+        return maxtype;
+    }
+}
+
+/* Update the traces in the log so the identified likely sequences are now 
+   reprented by the code assigned.
+*/
+void
+update_log(log_t *log, action_t maxw_eventp1, action_t maxw_eventp2, 
+             int *code) {
+    for (int i = 0; i < log->ndtr; i++) {
+        int seq_events_together = 0;
+        event_t *curtrc = log->trcs[i].head;
+        while (curtrc) {
+            if (curtrc->actn == maxw_eventp1 || curtrc->actn == maxw_eventp2) {
+                if (seq_events_together == 1) {
+                    event_t *delete_event_node = curtrc;
+                    curtrc = curtrc->next;
+                    delete_node(&log->trcs[i], delete_event_node);
+                    /* so we know there's more node to delete for when updating
+                       log with abstract codes. (in cases like 265 265)
+                    */
+                    if (curtrc) {
+                        if (curtrc->actn != maxw_eventp1) {
+                            seq_events_together = 0;
+                        }
+                    }
+                } else {
+                    curtrc->actn = *code;
+                    seq_events_together = 1;
+                    curtrc = curtrc->next;
+                }
+            } else {
+                seq_events_together = 0;
+                curtrc = curtrc->next;
+            }
+        }
+    }        
+}
+/* Delete a node from the trace when an identified likely sequence is 
+   encountered.
+*/
+void 
+delete_node(trace_t *trace, event_t *delete_event_node) {
+    event_t *new = trace->head;
+    event_t *prev = NULL;
+    while (new && new != delete_event_node) {
+        prev = new;
+        new = new->next;
+    }
+    prev->next = new->next;
+    prev = new;
+    new = new->next;
+    free(prev);
+}
+/* Update the prevevents table so the events removed will be replaced by its 
+   code.
+*/
+void
+update_events(int prevevents[], log_t *log) {
+    for (int i = 0; i < EVE_CPT; i++) {
+        prevevents[i] = 0;
+    }
+    for (int i = 0; i < log->ndtr; i++) {
+        event_t* pos = log->trcs[i].head;
+        while (pos) {
+            prevevents[pos->actn] += log->trcs[i].freq;
+            pos = pos->next;
+        }
+    }
+}
+
+/* free a sinlge trace */
+void
+free_trace(trace_t *trace) {
+    assert(trace != NULL);
+    event_t *curr = trace->head, *prev;
+    while (curr) {
+        prev = curr;
+        curr = curr->next;
+        free(prev);
+    }
+}
+
+/* Free a log */
+void
+free_log(log_t *log) {
+    for (int i = 0; i < log->ndtr; i++) {
+        free_trace(&log->trcs[i]);
+    }
+    free(log->trcs);
+    free(log);
+}
